@@ -1,0 +1,259 @@
+Assumptions
+
+Ubuntu (20.04 / 22.04 / 24.04 — commands use apt).
+
+You have a user with sudo privileges.
+
+You already have your Laravel app repo (Git) or archive ready to put on the server.
+
+Replace example.com and /var/www/laravel where appropriate.
+
+0) Quick notes on versions / requirements
+
+Laravel requires PHP 8.1+ (Laravel 10+ requires PHP ≥ 8.1; Composer 2.2+). Make sure PHP CLI and FPM (if used) match. 
+Laravel
++1
+
+1) Update server & install base packages
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y git unzip curl ca-certificates lsb-release apt-transport-https software-properties-common
+
+2) Install Apache
+sudo apt install -y apache2
+sudo systemctl enable --now apache2
+sudo ufw allow 'Apache Full'   # opens ports 80 and 443
+
+
+Enable mod_rewrite (Laravel uses it):
+
+sudo a2enmod rewrite
+sudo systemctl restart apache2
+
+
+(You’ll create the virtual host later.) 
+DEV Community
+
+3) Install PHP (8.1+) and required extensions
+
+Install PHP 8.1 or newer and extensions Laravel commonly needs:
+
+# example for PHP 8.2; change to 8.1 if you prefer
+sudo apt install -y php8.2 php8.2-cli php8.2-fpm php8.2-mbstring php8.2-xml php8.2-curl php8.2-gd php8.2-pgsql php8.2-mysql php8.2-zip php8.2-bcmath php8.2-json php8.2-tokenizer php8.2-fileinfo
+
+
+Check version:
+
+php -v
+
+
+(If php points to a different version for CLI, use update-alternatives to switch or call full path.)
+
+Sources listing required extensions: BCMath, Ctype, cURL, Fileinfo, Mbstring, OpenSSL, PDO, Tokenizer, XML, etc. 
+InMotion Hosting
++1
+
+4) Install Composer
+php -r "copy('https://getcomposer.org/installer','composer-setup.php');"
+php composer-setup.php --install-dir=/usr/local/bin --filename=composer
+php -r "unlink('composer-setup.php');"
+composer --version
+
+
+Composer 2.2+ is recommended for modern Laravel. 
+Laravel
+
+5) Put your Laravel app on the server
+
+Example: clone into /var/www/laravel:
+
+sudo mkdir -p /var/www/laravel
+sudo chown $USER:$USER /var/www/laravel
+cd /var/www/laravel
+git clone https://github.com/yourname/your-laravel-repo.git .    # or upload/extract files here
+
+
+Install PHP composer dependencies:
+
+composer install --no-dev --optimize-autoloader
+
+
+If your repo has vendor already, you can skip composer install.
+
+If the app has frontend assets:
+
+# optional: install node and npm, build assets
+sudo apt install -y nodejs npm
+npm ci
+npm run build   # or npm run production
+
+6) Environment file & key
+cp .env.example .env
+# Edit .env: set APP_URL, DB_* values, MAIL, etc.
+nano .env
+php artisan key:generate
+
+
+Make sure APP_URL equals your site URL (e.g. https://example.com).
+
+7) Database
+
+Install and configure (example MySQL/MariaDB):
+
+sudo apt install -y mariadb-server
+sudo mysql_secure_installation
+
+# create DB & user
+sudo mysql -u root -p
+CREATE DATABASE laravel_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'laravel_user'@'localhost' IDENTIFIED BY 'strong_password';
+GRANT ALL ON laravel_db.* TO 'laravel_user'@'localhost';
+FLUSH PRIVILEGES;
+EXIT;
+
+
+Update .env DB settings and run migrations:
+
+php artisan migrate --force
+
+8) File ownership & permissions (critical)
+
+Laravel must be able to write to storage and bootstrap/cache. A secure recommended approach:
+
+# change ownership to web server user/group (www-data on Ubuntu)
+sudo chown -R www-data:www-data /var/www/laravel
+# allow group write for storage & cache
+sudo chmod -R 775 /var/www/laravel/storage /var/www/laravel/bootstrap/cache
+
+
+Alternative (if you want your user to retain ownership):
+
+sudo chown -R $USER:www-data /var/www/laravel
+sudo chmod -R ug+rwx /var/www/laravel/storage /var/www/laravel/bootstrap/cache
+
+
+This gives Apache (www-data) the required write access without making things world-writable (avoid 777). Guides show www-data group + 775 as a secure pattern. 
+Medium
++1
+
+9) Create Apache virtual host
+
+Create /etc/apache2/sites-available/example.com.conf:
+
+<VirtualHost *:80>
+    ServerName example.com
+    ServerAlias www.example.com
+    DocumentRoot /var/www/laravel/public
+
+    <Directory /var/www/laravel/public>
+        AllowOverride All
+        Require all granted
+    </Directory>
+
+    # Optional: increase file upload size, timeouts, etc.
+    # php_value memory_limit 256M
+    # php_value upload_max_filesize 50M
+    # php_value post_max_size 50M
+
+    ErrorLog ${APACHE_LOG_DIR}/example.com_error.log
+    CustomLog ${APACHE_LOG_DIR}/example.com_access.log combined
+</VirtualHost>
+
+
+Enable site and reload:
+
+sudo a2ensite example.com.conf
+sudo systemctl reload apache2
+
+
+Make sure .htaccess in public/ exists (Laravel provides one) and AllowOverride All is set so mod_rewrite can work. 
+DEV Community
++1
+
+10) Serve from the public directory (very important)
+
+Never set DocumentRoot to the project root. Use public/ as DocumentRoot so .env, app files, and storage are not web-accessible.
+
+11) Enable HTTPS (Let's Encrypt)
+
+Use Certbot to get a free TLS certificate:
+
+sudo apt install -y certbot python3-certbot-apache
+sudo certbot --apache -d example.com -d www.example.com
+# follow prompts; certbot will edit the vhost to redirect to HTTPS
+
+12) Production optimizations (Laravel)
+
+Run these artisan commands:
+
+# optimize config and routes for production
+php artisan config:cache
+php artisan route:cache
+php artisan view:cache
+php artisan optimize
+
+
+Note: If you change env or routes, re-run config:cache/route:cache appropriately. Laravel docs recommend these for speed. 
+Laravel
+
+13) Common troubleshooting & tips
+
+If 403 Forbidden: check DocumentRoot path and directory permissions/ownership; ensure AllowOverride All and .htaccess present. 
+DEV Community
+
+If 500 or PHP errors: check Apache error log sudo tail -n 200 /var/log/apache2/error.log.
+
+If composer complains about wrong PHP version: ensure CLI PHP version matches (check php -v) and that composer uses that PHP. See PHP CLI alternatives. 
+Stack Overflow
+
+Permissions problems when Laravel creates files: confirm www-data has write access to storage & bootstrap/cache. Avoid 777. 
+Medium
+
+14) Example full checklist (quick copy)
+
+sudo apt update && sudo apt upgrade -y
+
+Install Apache, enable rewrite: sudo apt install apache2 && sudo a2enmod rewrite
+
+Install PHP 8.1+ and extensions.
+
+Install Composer.
+
+Deploy app to /var/www/laravel.
+
+composer install --no-dev --optimize-autoloader
+
+cp .env.example .env → update .env → php artisan key:generate
+
+Create DB and run php artisan migrate --force
+
+Set ownership: sudo chown -R www-data:www-data /var/www/laravel and sudo chmod -R 775 storage bootstrap/cache
+
+Create Apache vhost pointing to /var/www/laravel/public.
+
+Enable site, reload Apache, set up Certbot for HTTPS.
+
+Run php artisan config:cache && php artisan route:cache && php artisan view:cache.
+
+Sources / further reading
+
+Laravel deployment & requirements (PHP 8.1+, Composer 2.2+). 
+Laravel
++1
+
+Apache virtual host + mod_rewrite examples. 
+DEV Community
++1
+
+Best practice for storage & bootstrap/cache permissions. 
+Medium
++1
+
+If you want, I can:
+
+generate the exact Apache vhost file filled with your domain and path, or
+
+produce a small deploy script (bash) that automates most steps (clone, composer install, set permissions, enable vhost), or
+
+walk through adding environment variables, queue workers (supervisor), or setting up automatic SSL renewal.
+
+Tell me which of those you'd like and I’ll produce the file/script right away (include domain and repo path if you want the vhost/script tailored).
